@@ -11,7 +11,7 @@ from app.db.session import get_db
 from app.db import models
 from app.services.pdf_parser import extract_text_from_pdf
 from app.services.cv_renderer import generate_pdf_from_text
-from app.services.llm_client import generate_tailored_cv_text
+from app.services.llm_client import generate_tailored_cv_text, analyze_cv_for_ats
 
 router = APIRouter()
 
@@ -61,6 +61,23 @@ class TailoredSummary(BaseModel):
 class CVWithTailored(BaseModel):
     cv: CVDetail
     tailored_versions: List[TailoredSummary]
+
+
+class ATSAnalysisRequest(BaseModel):
+    job_requirement_id: int
+    model: str = "llama3.2"
+
+
+class ATSInsights(BaseModel):
+    ats_score: int
+    summary: str
+    issues: List[str]
+    recommendations: List[str]
+
+
+class ATSAnalysisResponse(BaseModel):
+    insights: ATSInsights
+    raw_report: str
 
 
 # ---------- Helpers ----------
@@ -188,6 +205,41 @@ def tailor_cv(
         tailored_text=tailored_record.tailored_text,
         tailored_pdf_url=build_file_url(Path(tailored_record.tailored_pdf_path)),
         model_used=tailored_record.model_used,
+    )
+
+
+@router.post("/cv/{cv_id}/analyze", response_model=ATSAnalysisResponse)
+def analyze_cv(
+    cv_id: int,
+    payload: ATSAnalysisRequest,
+    db: Session = Depends(get_db),
+):
+    cv_doc = db.query(models.CVDocument).filter(models.CVDocument.id == cv_id).first()
+    if not cv_doc:
+        raise HTTPException(status_code=404, detail="CV not found.")
+
+    job_req = (
+        db.query(models.JobRequirement)
+        .filter(models.JobRequirement.id == payload.job_requirement_id)
+        .first()
+    )
+    if not job_req:
+        raise HTTPException(status_code=404, detail="Job requirement not found.")
+
+    analysis = analyze_cv_for_ats(
+        model=payload.model,
+        job_description=job_req.description,
+        original_cv_text=cv_doc.original_text,
+    )
+
+    return ATSAnalysisResponse(
+        insights=ATSInsights(
+            ats_score=analysis["ats_score"],
+            summary=analysis["summary"],
+            issues=analysis["issues"],
+            recommendations=analysis["recommendations"],
+        ),
+        raw_report=analysis["raw_report"],
     )
 
 
