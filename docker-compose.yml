@@ -1,0 +1,20 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cv-revamp-backend
+    restart: unless-stopped
+    environment:
+      FILES_ROOT: /app/files
+      DATA_STORE_PATH: /app/data/store.json
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      GEMINI_FALLBACK_MODEL: ${GEMINI_FALLBACK_MODEL:-gemini-1.5-flash}
+      GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com}
+      GEMINI_API_VERSION: ${GEMINI_API_VERSION:-v1beta}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./files:/app/files
+      - ./data:/app/data
