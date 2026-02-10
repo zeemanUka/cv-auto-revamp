@@ -22,6 +22,11 @@ from app.services.llm_client import (
 
 router = APIRouter()
 DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+configured_files_root = Path(os.getenv("FILES_ROOT", "files"))
+if not configured_files_root.is_absolute():
+    configured_files_root = PROJECT_ROOT / configured_files_root
+FILES_ROOT = configured_files_root.resolve()
 
 
 # ---------- Pydantic schemas ----------
@@ -52,8 +57,7 @@ class CVDetail(BaseModel):
     original_pdf_url: str
     original_text: str
 
-    class Config:
-        orm_mode = True
+    model_config = {"from_attributes": True}
 
 
 class TailoredSummary(BaseModel):
@@ -62,8 +66,7 @@ class TailoredSummary(BaseModel):
     tailored_pdf_url: str
     model_used: str
 
-    class Config:
-        orm_mode = True
+    model_config = {"from_attributes": True}
 
 
 class CVWithTailored(BaseModel):
@@ -135,14 +138,25 @@ class TaskHistoryItem(BaseModel):
 
 # ---------- Helpers ----------
 
-FILES_ROOT = Path("files")
 ORIGINAL_DIR = FILES_ROOT / "original"
 TAILORED_DIR = FILES_ROOT / "tailored"
 
 
 def build_file_url(path: Path) -> str:
     # The StaticFiles mount in main.py will serve /files/<relative-path>
-    relative = path.relative_to(FILES_ROOT)
+    candidate = Path(path)
+    if candidate.is_absolute():
+        try:
+            relative = candidate.relative_to(FILES_ROOT)
+        except ValueError:
+            # Fallback to filename if path is outside current files root.
+            relative = Path(candidate.name)
+    else:
+        # Handle legacy records that may have "files/" prefix.
+        if candidate.parts and candidate.parts[0] == "files":
+            relative = Path(*candidate.parts[1:])
+        else:
+            relative = candidate
     return f"/files/{relative.as_posix()}"
 
 

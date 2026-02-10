@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -34,10 +35,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+configured_files_root = Path(os.getenv("FILES_ROOT", "files"))
+if not configured_files_root.is_absolute():
+    configured_files_root = PROJECT_ROOT / configured_files_root
+FILES_ROOT = configured_files_root.resolve()
+
 # Ensure static directories always exist (local and containerized runs).
-Path("files/original").mkdir(parents=True, exist_ok=True)
-Path("files/tailored").mkdir(parents=True, exist_ok=True)
-app.mount("/files", StaticFiles(directory="files"), name="files")
+FILES_ROOT.mkdir(parents=True, exist_ok=True)
+(FILES_ROOT / "original").mkdir(parents=True, exist_ok=True)
+(FILES_ROOT / "tailored").mkdir(parents=True, exist_ok=True)
+
+app.mount("/files", StaticFiles(directory=str(FILES_ROOT)), name="files")
 
 app.include_router(cv_router, prefix="/api")
 
