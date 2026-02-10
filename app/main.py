@@ -9,10 +9,7 @@ from fastapi.staticfiles import StaticFiles
 # Load variables from .env before importing modules that read env at import time.
 load_dotenv()
 
-from app.db.session import Base, engine
 from app.api.cv_routes import router as cv_router
-
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="CV Revamp Backend",
