@@ -7,3 +7,4 @@ pdfplumber
 reportlab
 requests
 python-dotenv
+psycopg[binary]
