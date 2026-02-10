@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,6 +34,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Ensure static directories always exist (local and containerized runs).
+Path("files/original").mkdir(parents=True, exist_ok=True)
+Path("files/tailored").mkdir(parents=True, exist_ok=True)
 app.mount("/files", StaticFiles(directory="files"), name="files")
 
 app.include_router(cv_router, prefix="/api")

@@ -1,7 +1,15 @@
+import os
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-DATABASE_URL = "sqlite:///./cv_app.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./cv_app.db")
+
+# Ensure sqlite parent directory exists for file-based URLs.
+if DATABASE_URL.startswith("sqlite:///"):
+    sqlite_path = DATABASE_URL.replace("sqlite:///", "", 1)
+    parent_dir = os.path.dirname(sqlite_path) or "."
+    os.makedirs(parent_dir, exist_ok=True)
 
 engine = create_engine(
     DATABASE_URL, connect_args={"check_same_thread": False}
