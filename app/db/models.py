@@ -21,6 +21,9 @@ class CVDocument(Base):
     tailored_versions = relationship(
         "TailoredCV", back_populates="cv", cascade="all, delete-orphan"
     )
+    ats_analyses = relationship(
+        "ATSAnalysis", back_populates="cv", cascade="all, delete-orphan"
+    )
 
 
 class JobRequirement(Base):
@@ -35,6 +38,9 @@ class JobRequirement(Base):
     cv = relationship("CVDocument", back_populates="job_requirements")
     tailored_versions = relationship(
         "TailoredCV", back_populates="job_requirement", cascade="all, delete-orphan"
+    )
+    ats_analyses = relationship(
+        "ATSAnalysis", back_populates="job_requirement", cascade="all, delete-orphan"
     )
 
 
@@ -51,3 +57,21 @@ class TailoredCV(Base):
 
     cv = relationship("CVDocument", back_populates="tailored_versions")
     job_requirement = relationship("JobRequirement", back_populates="tailored_versions")
+
+
+class ATSAnalysis(Base):
+    __tablename__ = "ats_analyses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cv_id = Column(Integer, ForeignKey("cv_documents.id"), nullable=False)
+    job_requirement_id = Column(Integer, ForeignKey("job_requirements.id"), nullable=False)
+    model_used = Column(String(100), nullable=False)
+    ats_score = Column(Integer, nullable=False)
+    summary = Column(Text, nullable=False)
+    issues_json = Column(Text, nullable=False, default="[]")
+    recommendations_json = Column(Text, nullable=False, default="[]")
+    raw_report = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    cv = relationship("CVDocument", back_populates="ats_analyses")
+    job_requirement = relationship("JobRequirement", back_populates="ats_analyses")

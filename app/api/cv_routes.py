@@ -1,3 +1,6 @@
+import os
+import json
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 from typing import List, Optional
@@ -5,15 +8,20 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi import status
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
 from app.db import models
 from app.services.pdf_parser import extract_text_from_pdf
 from app.services.cv_renderer import generate_pdf_from_text
-from app.services.llm_client import generate_tailored_cv_text, analyze_cv_for_ats
+from app.services.llm_client import (
+    generate_tailored_cv_text,
+    analyze_cv_for_ats,
+    resolve_gemini_model,
+)
 
 router = APIRouter()
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
 
 # ---------- Pydantic schemas ----------
@@ -26,7 +34,7 @@ class CVUploadResponse(BaseModel):
 
 class TailorRequest(BaseModel):
     job_requirement_id: int
-    model: str = "llama3.2"  # adjust to match your local model name
+    model: str = DEFAULT_GEMINI_MODEL
 
 
 class TailoredCVResponse(BaseModel):
@@ -65,7 +73,7 @@ class CVWithTailored(BaseModel):
 
 class ATSAnalysisRequest(BaseModel):
     job_requirement_id: int
-    model: str = "llama3.2"
+    model: str = DEFAULT_GEMINI_MODEL
 
 
 class ATSInsights(BaseModel):
@@ -80,6 +88,51 @@ class ATSAnalysisResponse(BaseModel):
     raw_report: str
 
 
+class TailoredHistoryItem(BaseModel):
+    id: int
+    cv_id: int
+    cv_title: str
+    job_requirement_id: int
+    job_title: str
+    tailored_pdf_url: str
+    model_used: str
+    created_at: datetime
+
+
+class ATSAnalysisHistoryItem(BaseModel):
+    id: int
+    cv_id: int
+    cv_title: str
+    job_requirement_id: int
+    job_title: str
+    model_used: str
+    ats_score: int
+    summary: str
+    issues: List[str]
+    recommendations: List[str]
+    raw_report: str
+    created_at: datetime
+
+
+class HistoryResponse(BaseModel):
+    tailored_cv_history: List[TailoredHistoryItem]
+    ats_analysis_history: List[ATSAnalysisHistoryItem]
+
+
+class TaskHistoryItem(BaseModel):
+    task_type: str
+    task_id: int
+    cv_id: int
+    cv_title: str
+    job_requirement_id: int
+    job_title: str
+    model_used: str
+    created_at: datetime
+    tailored_pdf_url: Optional[str] = None
+    ats_score: Optional[int] = None
+    summary: Optional[str] = None
+
+
 # ---------- Helpers ----------
 
 FILES_ROOT = Path("files")
@@ -91,6 +144,17 @@ def build_file_url(path: Path) -> str:
     # The StaticFiles mount in main.py will serve /files/<relative-path>
     relative = path.relative_to(FILES_ROOT)
     return f"/files/{relative.as_posix()}"
+
+
+def parse_string_list(raw_json: str) -> List[str]:
+    try:
+        payload = json.loads(raw_json or "[]")
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(payload, list):
+        return []
+    return [str(item) for item in payload if item is not None]
 
 
 # ---------- Routes ----------
@@ -174,9 +238,11 @@ def tailor_cv(
     if not job_req:
         raise HTTPException(status_code=404, detail="Job requirement not found.")
 
-    # Call LLM to get tailored text
+    resolved_model = resolve_gemini_model(payload.model)
+
+    # Call Gemini to get tailored text
     tailored_text = generate_tailored_cv_text(
-        model=payload.model,
+        model=resolved_model,
         job_description=job_req.description,
         original_cv_text=cv_doc.original_text,
     )
@@ -192,7 +258,7 @@ def tailor_cv(
         job_requirement_id=job_req.id,
         tailored_text=tailored_text,
         tailored_pdf_path=str(tailored_path),
-        model_used=payload.model,
+        model_used=resolved_model,
     )
     db.add(tailored_record)
     db.commit()
@@ -226,11 +292,26 @@ def analyze_cv(
     if not job_req:
         raise HTTPException(status_code=404, detail="Job requirement not found.")
 
+    resolved_model = resolve_gemini_model(payload.model)
+
     analysis = analyze_cv_for_ats(
-        model=payload.model,
+        model=resolved_model,
         job_description=job_req.description,
         original_cv_text=cv_doc.original_text,
     )
+
+    ats_record = models.ATSAnalysis(
+        cv_id=cv_doc.id,
+        job_requirement_id=job_req.id,
+        model_used=resolved_model,
+        ats_score=analysis["ats_score"],
+        summary=analysis["summary"],
+        issues_json=json.dumps(analysis["issues"]),
+        recommendations_json=json.dumps(analysis["recommendations"]),
+        raw_report=analysis["raw_report"],
+    )
+    db.add(ats_record)
+    db.commit()
 
     return ATSAnalysisResponse(
         insights=ATSInsights(
@@ -300,3 +381,122 @@ def get_tailored_cv(
         tailored_pdf_url=build_file_url(Path(t.tailored_pdf_path)),
         model_used=t.model_used,
     )
+
+
+@router.get("/history", response_model=HistoryResponse)
+def get_history(
+    cv_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    tailored_query = db.query(models.TailoredCV).options(
+        joinedload(models.TailoredCV.cv),
+        joinedload(models.TailoredCV.job_requirement),
+    )
+    if cv_id is not None:
+        tailored_query = tailored_query.filter(models.TailoredCV.cv_id == cv_id)
+    tailored_records = tailored_query.order_by(models.TailoredCV.created_at.desc()).all()
+
+    ats_query = db.query(models.ATSAnalysis).options(
+        joinedload(models.ATSAnalysis.cv),
+        joinedload(models.ATSAnalysis.job_requirement),
+    )
+    if cv_id is not None:
+        ats_query = ats_query.filter(models.ATSAnalysis.cv_id == cv_id)
+    ats_records = ats_query.order_by(models.ATSAnalysis.created_at.desc()).all()
+
+    tailored_history = [
+        TailoredHistoryItem(
+            id=record.id,
+            cv_id=record.cv_id,
+            cv_title=record.cv.title if record.cv else "",
+            job_requirement_id=record.job_requirement_id,
+            job_title=record.job_requirement.title if record.job_requirement else "",
+            tailored_pdf_url=build_file_url(Path(record.tailored_pdf_path)),
+            model_used=record.model_used,
+            created_at=record.created_at,
+        )
+        for record in tailored_records
+    ]
+
+    ats_history = [
+        ATSAnalysisHistoryItem(
+            id=record.id,
+            cv_id=record.cv_id,
+            cv_title=record.cv.title if record.cv else "",
+            job_requirement_id=record.job_requirement_id,
+            job_title=record.job_requirement.title if record.job_requirement else "",
+            model_used=record.model_used,
+            ats_score=record.ats_score,
+            summary=record.summary,
+            issues=parse_string_list(record.issues_json),
+            recommendations=parse_string_list(record.recommendations_json),
+            raw_report=record.raw_report,
+            created_at=record.created_at,
+        )
+        for record in ats_records
+    ]
+
+    return HistoryResponse(
+        tailored_cv_history=tailored_history,
+        ats_analysis_history=ats_history,
+    )
+
+
+@router.get("/tasks", response_model=List[TaskHistoryItem])
+def get_all_tasks(
+    db: Session = Depends(get_db),
+):
+    tailored_records = (
+        db.query(models.TailoredCV)
+        .options(
+            joinedload(models.TailoredCV.cv),
+            joinedload(models.TailoredCV.job_requirement),
+        )
+        .order_by(models.TailoredCV.created_at.desc())
+        .all()
+    )
+    ats_records = (
+        db.query(models.ATSAnalysis)
+        .options(
+            joinedload(models.ATSAnalysis.cv),
+            joinedload(models.ATSAnalysis.job_requirement),
+        )
+        .order_by(models.ATSAnalysis.created_at.desc())
+        .all()
+    )
+
+    tasks: List[TaskHistoryItem] = []
+
+    for record in tailored_records:
+        tasks.append(
+            TaskHistoryItem(
+                task_type="cv_tailor",
+                task_id=record.id,
+                cv_id=record.cv_id,
+                cv_title=record.cv.title if record.cv else "",
+                job_requirement_id=record.job_requirement_id,
+                job_title=record.job_requirement.title if record.job_requirement else "",
+                model_used=record.model_used,
+                created_at=record.created_at,
+                tailored_pdf_url=build_file_url(Path(record.tailored_pdf_path)),
+            )
+        )
+
+    for record in ats_records:
+        tasks.append(
+            TaskHistoryItem(
+                task_type="ats_analysis",
+                task_id=record.id,
+                cv_id=record.cv_id,
+                cv_title=record.cv.title if record.cv else "",
+                job_requirement_id=record.job_requirement_id,
+                job_title=record.job_requirement.title if record.job_requirement else "",
+                model_used=record.model_used,
+                created_at=record.created_at,
+                ats_score=record.ats_score,
+                summary=record.summary,
+            )
+        )
+
+    tasks.sort(key=lambda item: item.created_at, reverse=True)
+    return tasks

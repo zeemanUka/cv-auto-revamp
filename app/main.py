@@ -1,6 +1,10 @@
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+
+# Load variables from .env before importing modules that read env at import time.
+load_dotenv()
 
 from app.db.session import Base, engine
 from app.api.cv_routes import router as cv_router
@@ -16,7 +20,8 @@ app = FastAPI(
 origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "http://192.168.1.238:3000"
+    "http://192.168.1.238:3000",
+    "https://cv-revamp-frontend.vercel.app"
 ]
 
 app.add_middleware(
@@ -30,3 +35,5 @@ app.add_middleware(
 app.mount("/files", StaticFiles(directory="files"), name="files")
 
 app.include_router(cv_router, prefix="/api")
+
+## Create a copy of this file and name it Verticul Data.
